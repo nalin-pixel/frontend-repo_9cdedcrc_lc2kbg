@@ -18,7 +18,16 @@
   }
 
   body {
-    @apply antialiased;
+    @apply antialiased bg-slate-950 text-slate-100;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Remove tap highlight on all elements (iOS Safari) */
+  * { -webkit-tap-highlight-color: transparent; }
+
+  canvas {
+    display: block;
+    background: transparent;
   }
 }
 
