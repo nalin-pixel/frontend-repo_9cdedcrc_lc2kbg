@@ -16,9 +16,11 @@ export default function RippleMode({ progress = 0, allowInteraction = true }) {
     ctx.fillStyle = g
     ctx.fillRect(0, 0, w, h)
 
+    const now = performance.now()
+
     // Auto ripple density grows with progress
     const autoCount = Math.floor(1 + progress * 3)
-    const time = performance.now() / 1000
+    const time = now / 1000
     for (let i = 0; i < autoCount; i++) {
       const r = 40 + ((time * (i + 1) * 20) % 80)
       const x = ((i * 97.31) % 1) * w
@@ -27,21 +29,35 @@ export default function RippleMode({ progress = 0, allowInteraction = true }) {
     }
 
     // User ripples
-    ripplesRef.current = ripplesRef.current.filter((rp) => performance.now() - rp.t < 1500)
+    ripplesRef.current = ripplesRef.current.filter((rp) => now - rp.t < 1500)
     ripplesRef.current.forEach((rp) => {
-      const elapsed = (performance.now() - rp.t) / 1000
+      const elapsed = (now - rp.t) / 1000
       const radius = rp.r0 + elapsed * 120
       drawRipple(ctx, rp.x, rp.y, radius, 1 - elapsed / 1.5)
     })
   }
 
-  const onClick = useCallback((e) => {
-    if (!allowInteraction) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    ripplesRef.current.push({ x: e.clientX - rect.left, y: e.clientY - rect.top, r0: 10, t: performance.now() })
+  const addRipple = useCallback((clientX, clientY, target) => {
+    if (!allowInteraction || !target) return
+    const rect = target.getBoundingClientRect()
+    ripplesRef.current.push({ x: clientX - rect.left, y: clientY - rect.top, r0: 10, t: performance.now() })
   }, [allowInteraction])
 
-  return <div className="w-full h-full" onClick={onClick}><CanvasSurface className="w-full h-full" draw={draw} /></div>
+  const onPointerDown = useCallback((e) => {
+    // Support mouse, touch, and pen
+    if (e.nativeEvent && e.nativeEvent.touches && e.nativeEvent.touches.length > 0) {
+      const t = e.nativeEvent.touches[0]
+      addRipple(t.clientX, t.clientY, e.currentTarget)
+    } else {
+      addRipple(e.clientX, e.clientY, e.currentTarget)
+    }
+  }, [addRipple])
+
+  return (
+    <div className="w-full h-full" onPointerDown={onPointerDown}>
+      <CanvasSurface className="w-full h-full" draw={draw} />
+    </div>
+  )
 }
 
 function drawRipple(ctx, x, y, r, alpha = 0.8) {
