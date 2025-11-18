@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 // CanvasSurface - responsive canvas that scales to parent size safely
-export default function CanvasSurface({ draw, className = '', pixelRatio, style }) {
+export default function CanvasSurface({ draw, className = '', pixelRatio, style, debug = false }) {
   const canvasRef = useRef(null)
   const dpr = Math.min(
     typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1,
@@ -13,7 +13,7 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
     const canvas = canvasRef.current
     if (!canvas) return
 
-    // Request a stable 2D context (avoid desynchronized on some mobile browsers)
+    // Request a stable 2D context (avoid desynchronized on some browsers)
     let ctx = canvas.getContext('2d', {
       alpha: true,
       willReadFrequently: false,
@@ -26,16 +26,21 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
     let height = 0
     let scheduled = false
 
+    // Offscreen buffer to keep last good frame (helps mask brief layout glitches)
+    const buffer = document.createElement('canvas')
+    const bctx = buffer.getContext('2d')
+
+    const log = (...args) => { if (debug) console.debug('[CanvasSurface]', ...args) }
+
     const safeMeasure = () => {
       if (!canvas) return
       const parent = canvas.parentElement || canvas
       const rect = parent.getBoundingClientRect()
 
-      // Ignore transient zero-size measurements; keep previous size
       const w = Math.floor(rect.width)
       const h = Math.floor(rect.height)
       if (w < 2 || h < 2) {
-        // Try again on next frame to avoid blank canvas
+        // Defer and try again next frame to avoid blanking during transient measurements
         if (!scheduled) {
           scheduled = true
           requestAnimationFrame(() => {
@@ -43,6 +48,7 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
             safeMeasure()
           })
         }
+        log('bail measure small size', { w, h })
         return
       }
 
@@ -57,15 +63,26 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
         canvas.style.height = height + 'px'
         // Reset transform to map 1 unit to 1 CSS pixel
         ctx.setTransform(pr, 0, 0, pr, 0, 0)
+        // Resize buffer to match CSS pixels
+        buffer.width = width
+        buffer.height = height
+        log('measure apply', { width, height, pr })
         if (draw && width >= 2 && height >= 2) {
-          try { draw(ctx, width, height, 0) } catch { /* noop */ }
+          try { draw(ctx, width, height, 0) } catch (e) { log('draw error on measure', e) }
+          // Capture last frame
+          try { bctx.clearRect(0, 0, width, height); bctx.drawImage(canvas, 0, 0, width, height) } catch {}
         }
       }
     }
 
     const onFrame = (t) => {
       if (draw && width >= 2 && height >= 2) {
-        try { draw(ctx, width, height, t) } catch { /* noop */ }
+        try { draw(ctx, width, height, t) } catch (e) { log('draw error on frame', e) }
+        // Capture last frame
+        try { bctx.clearRect(0, 0, width, height); bctx.drawImage(canvas, 0, 0, width, height) } catch {}
+      } else if (width >= 2 && height >= 2) {
+        // If drawing paused but we have a buffer, re-blit it (defensive)
+        try { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.setTransform(pr, 0, 0, pr, 0, 0); ctx.drawImage(buffer, 0, 0, width, height) } catch {}
       }
       frameId = requestAnimationFrame(onFrame)
     }
@@ -85,10 +102,15 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
     const visHandler = () => safeMeasure()
     document.addEventListener('visibilitychange', visHandler)
 
-    // Also re-measure on pointer interactions (some mobile browsers change layout)
+    // Also re-measure on pointer interactions; attach to both canvas and its parent
     const pointerHandler = () => safeMeasure()
+    const parentEl = canvas.parentElement
     canvas.addEventListener('pointerdown', pointerHandler, { passive: true })
     canvas.addEventListener('pointerup', pointerHandler, { passive: true })
+    if (parentEl) {
+      parentEl.addEventListener('pointerdown', pointerHandler, { passive: true })
+      parentEl.addEventListener('pointerup', pointerHandler, { passive: true })
+    }
 
     // Initial measure + start loop
     safeMeasure()
@@ -99,6 +121,10 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
       document.removeEventListener('visibilitychange', visHandler)
       canvas.removeEventListener('pointerdown', pointerHandler)
       canvas.removeEventListener('pointerup', pointerHandler)
+      if (parentEl) {
+        parentEl.removeEventListener('pointerdown', pointerHandler)
+        parentEl.removeEventListener('pointerup', pointerHandler)
+      }
       if (ro) {
         ro.disconnect()
       } else if (resizeHandler) {
@@ -106,7 +132,7 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style 
         window.removeEventListener('orientationchange', resizeHandler)
       }
     }
-  }, [draw, pr])
+  }, [draw, pr, debug])
 
   return <canvas ref={canvasRef} className={className} style={{ touchAction: 'manipulation', ...style }} />
 }
