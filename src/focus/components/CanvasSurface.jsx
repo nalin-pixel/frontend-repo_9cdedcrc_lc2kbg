@@ -32,6 +32,26 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style,
 
     const log = (...args) => { if (debug) console.debug('[CanvasSurface]', ...args) }
 
+    // Windows/desktop tap fallback: temporarily force pixel ratio = 1
+    let forcedPrActive = false
+    let forcedFramesLeft = 0
+    let lastAppliedPr = pr
+
+    const currentPr = () => (forcedPrActive ? 1 : pr)
+
+    const applySizeAndTransform = (wCss, hCss, usePr) => {
+      const cw = Math.max(2, Math.floor(wCss * usePr))
+      const ch = Math.max(2, Math.floor(hCss * usePr))
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw
+        canvas.height = ch
+      }
+      if (canvas.style.width !== wCss + 'px') canvas.style.width = wCss + 'px'
+      if (canvas.style.height !== hCss + 'px') canvas.style.height = hCss + 'px'
+      // Reset transform to map 1 unit to 1 CSS pixel
+      ctx.setTransform(usePr, 0, 0, usePr, 0, 0)
+    }
+
     const safeMeasure = () => {
       if (!canvas) return
       const parent = canvas.parentElement || canvas
@@ -52,21 +72,18 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style,
         return
       }
 
-      if (w !== width || h !== height) {
+      const usePr = currentPr()
+      if (w !== width || h !== height || usePr !== lastAppliedPr) {
         width = w
         height = h
-        const cw = Math.max(2, Math.floor(width * pr))
-        const ch = Math.max(2, Math.floor(height * pr))
-        canvas.width = cw
-        canvas.height = ch
-        canvas.style.width = width + 'px'
-        canvas.style.height = height + 'px'
-        // Reset transform to map 1 unit to 1 CSS pixel
-        ctx.setTransform(pr, 0, 0, pr, 0, 0)
-        // Resize buffer to match CSS pixels
-        buffer.width = width
-        buffer.height = height
-        log('measure apply', { width, height, pr })
+        lastAppliedPr = usePr
+        applySizeAndTransform(width, height, usePr)
+        // Resize buffer to match CSS pixels (not device pixels)
+        if (buffer.width !== width || buffer.height !== height) {
+          buffer.width = width
+          buffer.height = height
+        }
+        log('measure apply', { width, height, pr: usePr })
         if (draw && width >= 2 && height >= 2) {
           try { draw(ctx, width, height, 0) } catch (e) { log('draw error on measure', e) }
           // Capture last frame
@@ -76,13 +93,35 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style,
     }
 
     const onFrame = (t) => {
+      // If we are in forced PR mode, count down frames and restore when done
+      if (forcedPrActive) {
+        forcedFramesLeft -= 1
+        if (forcedFramesLeft <= 0) {
+          forcedPrActive = false
+          // Re-measure with native PR restored
+          safeMeasure()
+        }
+      }
+
+      const usePr = currentPr()
+      if (usePr !== lastAppliedPr) {
+        // If PR changed mid-frame, re-apply transform and sizes defensively
+        applySizeAndTransform(width, height, usePr)
+        lastAppliedPr = usePr
+      }
+
       if (draw && width >= 2 && height >= 2) {
         try { draw(ctx, width, height, t) } catch (e) { log('draw error on frame', e) }
         // Capture last frame
         try { bctx.clearRect(0, 0, width, height); bctx.drawImage(canvas, 0, 0, width, height) } catch {}
       } else if (width >= 2 && height >= 2) {
         // If drawing paused but we have a buffer, re-blit it (defensive)
-        try { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.setTransform(pr, 0, 0, pr, 0, 0); ctx.drawImage(buffer, 0, 0, width, height) } catch {}
+        try {
+          ctx.setTransform(1, 0, 0, 1, 0, 0)
+          ctx.clearRect(0, 0, canvas.width, canvas.height)
+          ctx.setTransform(usePr, 0, 0, usePr, 0, 0)
+          ctx.drawImage(buffer, 0, 0, width, height)
+        } catch {}
       }
       frameId = requestAnimationFrame(onFrame)
     }
@@ -103,7 +142,12 @@ export default function CanvasSurface({ draw, className = '', pixelRatio, style,
     document.addEventListener('visibilitychange', visHandler)
 
     // Also re-measure on pointer interactions; attach to both canvas and its parent
-    const pointerHandler = () => safeMeasure()
+    const pointerHandler = () => {
+      // Trigger forced 1x pixel ratio for a few frames (helps some Windows/desktop cases)
+      forcedPrActive = true
+      forcedFramesLeft = 4
+      safeMeasure()
+    }
     const parentEl = canvas.parentElement
     canvas.addEventListener('pointerdown', pointerHandler, { passive: true })
     canvas.addEventListener('pointerup', pointerHandler, { passive: true })
